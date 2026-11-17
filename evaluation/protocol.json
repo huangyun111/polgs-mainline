@@ -1,0 +1,18 @@
+{
+  "frozen_local_date": "2026-11-07 Asia/Shanghai",
+  "scenes": ["StandingRabbit", "LyingRabbit"],
+  "training_seed": 0,
+  "train_ids": [0,1,2,4,5,7,8,9,11,12,14,15,16,18],
+  "validation_ids": [3,10,17],
+  "test_ids": [6,13,19],
+  "ours_definition": "FIRST POLAR_PGSR_REPROJECTION_20261106: own scene nominal15k checkpoint,map,original Adam; original common losses/Stokes/TSC unchanged; .03 detach(exp(-e))*e, e<1px; fresh camera-z both views; private geo-depth VJP only;280 updates;fixed population;native Poisson depth8 threshold3e-5",
+  "ours_standing_primary": "Reuse FIRST frozen endpoint by source and mesh SHA, never select best repeat",
+  "timing_replay": "Ours280 then Continue from same original state sequentially on same admitted GPU per scene. Standing replay is cost calibration/sensitivity only, not replacement primary. No other experiment allocated to these GPUs until complete.",
+  "cost_rule": "First Continue update whose cumulative CUDA stream elapsed time around original step is >= paired Ours280 measured time. Always also save Continue280. CUDA event measurement excludes initialization/saving/extraction, includes host delays inside step; report wall and allocator peaks separately. Safety cap5000, mark failed if no crossing; do not choose by GT. This is measured stream-time matching, not strict FLOPs equivalence.",
+  "adaptation": "Only scene/path/native dimensions/camera reference and removal of Standing-only ROI diagnostics from full-image training. Original frozen loss and TSC semantics retained. No scene-specific ROI copied to Lying. Separate post-endpoint held rendering.",
+  "schedule": "Original Random0 view stack; original NumPy0 first560 indices then backgrounds ordering; extension beyond560 only appends. Neighbor Random20261106 author pair rule unchanged.",
+  "known_TSC_boundary": "Inherited cached camera-z queried through original range-assuming TSC chain; DO NOT silently fix. New geometry uses correct separate camera-z chain. Any corrected variant requires separate paired version, not part of this comparison.",
+  "evaluation": "Frozen B4_6 alignment, no ICP; full final Mesh;100000 area samples/direction seeds20261020,20261021,20261022;unsquared closest full triangle L2;CD mean of directional means;GTcoordinates x1000 not independently calibrated mm;threshold .5,1,2;unsigned normals;area/tails/failures disclosed",
+  "external_budgets": "Verified GS/PolGS/PolGS++ old native15000 results reuse only after hash audit. New PGSR/PISR/PhyGaP per-author configs and native extraction audited and separately frozen BEFORE training; no forced15000 comparison.",
+  "scope": "No new scenes,seeds,mechanisms,weight/threshold scans;no global AGENTS/PLAN edits;PolarGS not PolGS. Blocked methods remain missing with reason;other methods proceed."
+}

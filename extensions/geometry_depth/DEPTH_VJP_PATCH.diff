@@ -1,0 +1,215 @@
+--- native_original/cuda_rasterizer/backward.cu
++++ native_geo/cuda_rasterizer/backward.cu
+@@ -558,6 +558,7 @@
+ 	float* __restrict__ dL_dcolors,
+ 	float* __restrict__ dL_dnormal,
+ 	float* __restrict__ dL_ddepth,
++	float* __restrict__ dL_dslope,
+ 	float* config)
+ {
+ 	// We rasterize again. Compute necessary block info.
+@@ -597,7 +598,8 @@
+ 	const float D_final = inside && normalize_depth ? final_D[pix_id] : 0;
+ 	const float V_final = inside ? final_V[pix_id] : 0;
+ 
+-	float T = T_final;
++    float T = T_final;
++
+ 	// We start from the back. The ID of the last contributing
+ 	// Gaussian is known from each pixel from the forward.
+ 	uint32_t contributor = toDo;
+@@ -785,8 +787,8 @@
+ 			// }
+ 
+ 
+-			dL_dalpha *= T;
+-			
++            dL_dalpha *= T;
++
+ 			// Add grads w.r.t. alpha from opac output
+ 			dL_dalpha += dL_dpixO * T_final / (1 - alpha);
+ 			
+@@ -820,6 +822,7 @@
+ 
+ 			// printf("%.10f, ", dL_dalpha);
+ 
++            if(con_o.w*G>=.99f) dL_dalpha=0;
+ 			dL_ddist += dL_dalpha * con_o.w * -0.5f * G;
+ 
+ 
+@@ -834,14 +837,17 @@
+ 				dL_ddist * (d.y * d.y)
+ 			};
+ 
+-			// Add grads w.r.t. mean2D from differencing depth
+-			if (surface && per_pixel_depth) {
+-				dL_dNDC.x += 1 * -dL_dpixD * (Jinv_u0_u1[6] * Jinv_u0_u1[0] + Jinv_u0_u1[9] * Jinv_u0_u1[2]);
+-				dL_dNDC.y += 1 * -dL_dpixD * (Jinv_u0_u1[6] * Jinv_u0_u1[1] + Jinv_u0_u1[9] * Jinv_u0_u1[3]);
+-			}
+-			// printf("%.8f, %.8f\n", Jinv_u0_u1[2], Jinv_u0_u1[3]);
+-
+-			// Update gradients w.r.t. 2D mean position of the Gaussian
++            if (surface && per_pixel_depth) {
++                float q=alpha*T*dL_dpixD;
++                if (normalize_depth) q/=(1.f-T_final);
++                float sx=Jinv_u0_u1[0]*Jinv_u0_u1[6]+Jinv_u0_u1[2]*Jinv_u0_u1[9];
++                float sy=Jinv_u0_u1[1]*Jinv_u0_u1[6]+Jinv_u0_u1[3]*Jinv_u0_u1[9];
++                atomicAdd(&dL_dslope[2*global_id],-d.x*q);
++                atomicAdd(&dL_dslope[2*global_id+1],-d.y*q);
++                dL_dNDC.x-=sx*q*ddelx_dx;
++                dL_dNDC.y-=sy*q*ddely_dy;
++            }
++            // Update gradients w.r.t. 2D mean position of the Gaussian
+ 			atomicAdd(&dL_dmean2D[global_id].x, dL_dNDC.x);
+ 			atomicAdd(&dL_dmean2D[global_id].y, dL_dNDC.y);
+ 
+@@ -968,6 +974,7 @@
+ 	float* dL_dcolors,
+ 	float* dL_dnormal,
+ 	float* dL_ddepth,
++	float* dL_dslope,
+ 	float* config)
+ {
+ 	renderCUDA<NUM_CHANNELS> << <grid, block >> >(
+@@ -1000,6 +1007,7 @@
+ 		dL_dcolors,
+ 		dL_dnormal,
+ 		dL_ddepth,
++		dL_dslope,
+ 		config
+ 		);
+ }--- native_original/cuda_rasterizer/backward.h
++++ native_geo/cuda_rasterizer/backward.h
+@@ -51,6 +51,7 @@
+ 		float* dL_dcolors,
+ 		float* dL_dnormal,
+ 		float* dL_ddepth,
++		float* dL_dslope,
+ 		float* config);
+ 
+ 	void preprocess(
+--- native_original/cuda_rasterizer/rasterizer.h
++++ native_geo/cuda_rasterizer/rasterizer.h
+@@ -99,6 +99,7 @@
+ 			float* dL_dviewmat,
+ 			float* dL_dprojmat,
+ 			float* dL_dcampos,
++		float* dL_dslope,
+ 			bool debug,
+ 			float* config);
+ 	};
+--- native_original/cuda_rasterizer/rasterizer_impl.cu
++++ native_geo/cuda_rasterizer/rasterizer_impl.cu
+@@ -411,6 +411,7 @@
+ 	float* dL_dviewmat,
+ 	float* dL_dprojmat,
+ 	float* dL_dcampos,
++		float* dL_dslope,
+ 	bool debug, 
+ 	float* config)
+ {
+@@ -464,7 +465,7 @@
+ 		dL_dopacity,
+ 		dL_dcolor,
+ 		dL_dnormal,
+-		dL_ddepth, config), debug)
++		dL_ddepth, dL_dslope, config), debug)
+ 
+ 	// Take care of the rest of preprocessing. Was the precomputed covariance
+ 	// given to us or a scales/rot pair? If precomputed, pass that. If not,
+--- native_original/diff_gaussian_rasterization/__init__.py
++++ native_geo/diff_gaussian_rasterization/__init__.py
+@@ -12,7 +12,8 @@
+ from typing import NamedTuple
+ import torch.nn as nn
+ import torch
+-from . import _C
++from extension_loader import extension as _C
++from slope_proxy import native_slopes
+ 
+ def cpu_deep_copy_tuple(input_tuple):
+     copied_tensors = [item.cpu().clone() if isinstance(item, torch.Tensor) else item for item in input_tuple]
+@@ -44,6 +45,7 @@
+         viewmatrix,
+         projmatrix,
+         campos,
++        native_slopes(means3D,rotations,viewmatrix,raster_settings),
+         raster_settings,
+     )
+ 
+@@ -62,6 +64,7 @@
+         viewmatrix,
+         projmatrix,
+         campos,
++        slopes_proxy,
+         raster_settings,
+     ):
+ 
+@@ -150,13 +153,13 @@
+         if raster_settings.debug:
+             cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
+             try:
+-                grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations, grad_viewmat, grad_projmat, grad_campos = _C.rasterize_gaussians_backward(*args)
++                grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations, grad_viewmat, grad_projmat, grad_campos, grad_slopes = _C.rasterize_gaussians_backward(*args)
+             except Exception as ex:
+                 torch.save(cpu_args, "snapshot_bw.dump")
+                 print("\nAn error occured in backward. Writing snapshot_bw.dump for debugging.\n")
+                 raise ex
+         else:
+-             grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations, grad_viewmat, grad_projmat, grad_campos = _C.rasterize_gaussians_backward(*args)
++             grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations, grad_viewmat, grad_projmat, grad_campos, grad_slopes = _C.rasterize_gaussians_backward(*args)
+ 
+         grads = (
+             grad_means3D,
+@@ -170,6 +173,7 @@
+             grad_viewmat,
+             grad_projmat,
+             grad_campos,
++            grad_slopes,
+             None,
+         )
+ 
+--- native_original/rasterize_points.cu
++++ native_geo/rasterize_points.cu
+@@ -127,7 +127,7 @@
+   return std::make_tuple(rendered, out_color, out_normal, out_depth, out_opac, radii, geomBuffer, binningBuffer, imgBuffer);
+ }
+ 
+-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
++std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+  RasterizeGaussiansBackwardCUDA(
+  	const torch::Tensor& background,
+ 	const torch::Tensor& means3D,
+@@ -172,6 +172,7 @@
+   torch::Tensor dL_dcolors = torch::zeros({P, NUM_CHANNELS}, means3D.options());
+   torch::Tensor dL_dnormal = torch::zeros({P, 3}, means3D.options());
+   torch::Tensor dL_ddepth = torch::zeros({P, 1}, means3D.options());
++  torch::Tensor dL_dslope=torch::zeros({P,2},means3D.options());
+   torch::Tensor dL_dconic = torch::zeros({P, 2, 2}, means3D.options());
+   torch::Tensor dL_dopacity = torch::zeros({P, 1}, means3D.options());
+   torch::Tensor dL_dcutoff = torch::zeros({P, 4}, means3D.options());
+@@ -224,11 +225,12 @@
+ 		dL_dviewmat.contiguous().data<float>(),
+ 		dL_dprojmat.contiguous().data<float>(),
+ 		dL_dcampos.contiguous().data<float>(),
++		dL_dslope.contiguous().data<float>(),
+ 		debug, 
+ 		config.contiguous().data<float>());
+   }
+ 
+-  return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dopacity, dL_dmeans3D, dL_dcov3D, dL_dsh, dL_dscales, dL_drotations, dL_dviewmat, dL_dprojmat, dL_dcampos);
++  return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dopacity, dL_dmeans3D, dL_dcov3D, dL_dsh, dL_dscales, dL_drotations, dL_dviewmat, dL_dprojmat, dL_dcampos, dL_dslope);
+ }
+ 
+ torch::Tensor markVisible(
+--- native_original/rasterize_points.h
++++ native_geo/rasterize_points.h
+@@ -41,7 +41,7 @@
+ 	const bool debug,
+ 	const torch::Tensor& config);
+ 
+-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
++std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+  RasterizeGaussiansBackwardCUDA(
+  	const torch::Tensor& background,
+ 	const torch::Tensor& means3D,
